@@ -30,7 +30,7 @@ permissions:
 jobs:
   build-one:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 360
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
@@ -38,6 +38,22 @@ jobs:
         uses: actions/checkout@v6
         with:
           fetch-depth: 1
+
+      # Fork 没有 toolchain-cache / ccache-cache Release，必须从上游 WildKernels 下载预缓存工具链
+      - name: Point cache downloads to WildKernels upstream
+        shell: bash
+        run: |
+          set -euo pipefail
+          UP="WildKernels/OnePlus_KernelSU_SUSFS"
+          for f in \
+            .github/actions/kernel-source-sync/action.yml \
+            .github/actions/cache/restore/action.yml \
+            .github/actions/cache/save/action.yml
+          do
+            [ -f "$f" ] || continue
+            sed -i "s|\${{ github.repository }}|${UP}|g" "$f"
+            echo "patched $f -> ${UP}"
+          done
 
       - name: Resolve KSU Next + SUSFS refs
         id: deps
