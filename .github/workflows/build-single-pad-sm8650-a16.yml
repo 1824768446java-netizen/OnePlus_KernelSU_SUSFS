@@ -39,7 +39,7 @@ on:
         default: false
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build-one:
@@ -65,7 +65,6 @@ jobs:
           files = [
               ".github/actions/kernel-source-sync/action.yml",
               ".github/actions/cache/restore/action.yml",
-              ".github/actions/cache/save/action.yml",
           ]
           for rel in files:
               p = pathlib.Path(rel)
@@ -141,7 +140,9 @@ jobs:
             echo "CCACHE_NOHASHDIR=true"
             echo "CCACHE_COMPRESSION=true"
             echo "CCACHE_IS_KERNEL_COMPILING=true"
+            echo "CCACHE_LOGFILE=${{ github.workspace }}/ccache.log"
           } >> "$GITHUB_ENV"
+          touch "${{ github.workspace }}/ccache.log"
 
       - name: Build kernel (AnyKernel3 zip)
         id: build
