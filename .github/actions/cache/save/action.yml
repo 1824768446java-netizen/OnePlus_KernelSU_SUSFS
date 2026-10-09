@@ -43,7 +43,7 @@ runs:
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.github_token }}
-        TARGET_REPO: "${{ github.repository }}"
+        TARGET_REPO: "WildKernels/OnePlus_KernelSU_SUSFS"
       run: |
         # Archive, Split, and Upload Cache
         if [ "${{ inputs.debug }}" = "true" ]; then set -x; fi
