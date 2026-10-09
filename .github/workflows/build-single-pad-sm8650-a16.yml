@@ -1,5 +1,9 @@
 # Fork WildKernels/OnePlus_KernelSU_SUSFS 后把本文件放到 .github/workflows/ 再手动 Run workflow。
 # 只编一台 SM8650 平板（A16），产物为 AnyKernel3 zip（artifact 下载）。
+#
+# 已修复的坑：SUSFS 版本必须钉死。分支 gki-android14-6.1 的 HEAD 现在已经是 SUSFS v2.3.0，
+# 而 build-kernel action 的 case 只支持到 v2.2.0，会直接 `Unsupported SUSFS version` 退出。
+# 这里钉到 e287d59066380bf6de4396532d4a42edf4408701 = SUSFS v2.2.0（与作者 v2.2.0-r4 完全一致）。
 name: Build single Pad SM8650 (A16)
 
 on:
@@ -18,6 +22,16 @@ on:
         required: false
         type: string
         default: "Tue Jun 30 05:53:43 UTC 2026"
+      susfs_ref:
+        description: "SUSFS 分支或 commit（必须是 v2.2.0 / v2.1.0 / v2.0.0 之一，否则 action 会报 Unsupported）"
+        required: true
+        type: string
+        default: "e287d59066380bf6de4396532d4a42edf4408701"
+      ksu_sha:
+        description: "KernelSU-Next commit（234f6e04... = KSUVER 33239，与作者 v2.2.0-r4 一致）"
+        required: true
+        type: string
+        default: "234f6e040fcbca18b16d2398e1aa225712ec99ad"
       clean_build:
         description: "禁用 ccache 全量编译（更慢，排错时用）"
         required: false
@@ -65,7 +79,7 @@ jobs:
               print(f"patched {rel} -> {up}")
           PY
 
-      - name: Resolve KSU Next + SUSFS refs
+      - name: Resolve refs
         id: deps
         shell: bash
         run: |
@@ -74,29 +88,18 @@ jobs:
           CFG="configs/a16/${DEVICE}.json"
           test -f "$CFG" || { echo "::error::missing $CFG"; exit 1; }
 
-          ksu_type="KSUN"
-          ksu_ref="dev"
-          KSU_REPO_OWNER="KernelSU-Next"
-          KSU_REPO_NAME="KernelSU-Next"
+          # KernelSU-Next 钉死到作者 v2.2.0-r4 用的那个 commit（KSUVER 33239）
+          ksu_sha="${{ inputs.ksu_sha }}"
+          [[ "$ksu_sha" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::ksu_sha 必须是 40 位 sha"; exit 1; }
+          echo "KSU Next -> $ksu_sha"
 
-          QUERY='query($owner: String!, $name: String!, $headRef: String!) {
-            repository(owner: $owner, name: $name) {
-              ref(qualifiedName: $headRef) { target { ... on Commit { oid } } }
-            }
-          }'
-          HEAD_REF="refs/heads/${ksu_ref}"
-          RESULT=$(gh api graphql -f query="$QUERY" -f owner="$KSU_REPO_OWNER" -f name="$KSU_REPO_NAME" -f headRef="$HEAD_REF")
-          ksu_sha=$(echo "$RESULT" | jq -r '.data.repository.ref.target.oid // empty')
-          [ -n "$ksu_sha" ] || { echo "::error::cannot resolve KSU Next dev"; exit 1; }
-          echo "KSU Next dev -> $ksu_sha"
-
-          # SUSFS 必须用分支名下载 GitLab archive；传 40 位 commit SHA 会导致 tar 404
-          susfs_ref="gki-android14-6.1"
-          echo "SUSFS branch: $susfs_ref"
+          # SUSFS 钉死到 v2.2.0（action 只支持 v1.5.8/1.5.9-12/v2.0.0/v2.1.0/v2.2.0）
+          susfs_ref="${{ inputs.susfs_ref }}"
+          echo "SUSFS -> $susfs_ref"
 
           echo "ksu_sha=$ksu_sha" >> "$GITHUB_OUTPUT"
           echo "susfs_ref=$susfs_ref" >> "$GITHUB_OUTPUT"
-          jq -r '"Device: \(.model) manifest=\(.manifest) branch=\(.branch)"' "$CFG"
+          jq -r '"Device: \(.model)  manifest=\(.manifest)  branch=\(.branch)  os=\(.os_version)"' "$CFG"
 
       - name: Prepare device config JSON (multiline-safe)
         id: cfg
@@ -169,5 +172,5 @@ jobs:
             echo "| ZIP | ${{ steps.build.outputs.zip_name }} |"
             echo "| 耗时 | ${{ steps.build.outputs.build_time }}s |"
             echo ""
-            echo "到本 run 页面 **Artifacts** 下载 AnyKernel3 zip。刷写前确认 \`uname -r\` 与 zip 内内核版本一致（应为 **6.1.141**）。"
+            echo "到本 run 页面 **Artifacts** 下载 AnyKernel3 zip。刷写前确认 \`uname -r\` 与 zip 内内核版本一致。"
           } >> "$GITHUB_STEP_SUMMARY"
