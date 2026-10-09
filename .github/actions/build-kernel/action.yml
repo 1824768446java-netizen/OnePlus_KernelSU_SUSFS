@@ -831,6 +831,16 @@ runs:
               attempt=$((attempt + 1))
           done
           
+          # Fallback: git clone。GitLab 对“按需生成”的归档（尤其是按 commit SHA）会直接 403，
+          # 而 git 协议不受影响，所以这里兜底一把。
+          echo "⚠️ Archive fetch failed for $repo_name ($branch); falling back to git clone..."
+          rm -rf "$repo_name" "$shm_path" 2>/dev/null
+          if git clone -q --no-checkout "$url" "$repo_name" && git -C "$repo_name" checkout -q "$branch"; then
+              echo "✅ Success: $repo_name synced via git clone"
+              return 0
+          fi
+          rm -rf "$repo_name" 2>/dev/null
+          
           echo "::error::All attempts failed for $url"
           return 1
         }
