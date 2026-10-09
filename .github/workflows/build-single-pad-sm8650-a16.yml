@@ -14,7 +14,7 @@ on:
           - OP-PAD-2-SM8650
           - OP-PAD-PRO
       build_timestamp:
-        description: "内核 uname 构建时间（与原厂一致可填 #1 SMP PREEMPT ...）"
+        description: "uname 里的日期段（不要带 #1 SMP PREEMPT；内核会自动加）。例: Tue Jun 30 05:53:43 UTC 2026"
         required: false
         type: string
         default: "Tue Jun 30 05:53:43 UTC 2026"
@@ -71,11 +71,24 @@ jobs:
           [ -n "$susfs_sha" ] || { echo "::error::cannot resolve SUSFS $susfs_ref"; exit 1; }
           echo "SUSFS $susfs_ref -> $susfs_sha"
 
-          config_json=$(jq -c '.' "$CFG")
-          echo "config_json=$config_json" >> "$GITHUB_OUTPUT"
           echo "ksu_sha=$ksu_sha" >> "$GITHUB_OUTPUT"
           echo "susfs_sha=$susfs_sha" >> "$GITHUB_OUTPUT"
           jq -r '"Device: \(.model) manifest=\(.manifest) branch=\(.branch)"' "$CFG"
+
+      - name: Prepare device config JSON (multiline-safe)
+        id: cfg
+        shell: bash
+        run: |
+          set -euo pipefail
+          CFG="configs/a16/${{ inputs.device_model }}.json"
+          {
+            echo "config_json<<EOF"
+            jq -c '.' "$CFG"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Emergency disk cleanup
+        uses: ./.github/actions/disk-cleanup
 
       - name: Install build dependencies
         shell: bash
@@ -108,7 +121,7 @@ jobs:
         id: build
         uses: ./.github/actions/build-kernel
         with:
-          op_config_json: ${{ steps.deps.outputs.config_json }}
+          op_config_json: ${{ steps.cfg.outputs.config_json }}
           ksu_type: KSUN
           ksu_branch_or_hash: ${{ steps.deps.outputs.ksu_sha }}
           susfs_commit_hash_or_branch: ${{ steps.deps.outputs.susfs_sha }}
