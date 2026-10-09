@@ -90,15 +90,12 @@ jobs:
           [ -n "$ksu_sha" ] || { echo "::error::cannot resolve KSU Next dev"; exit 1; }
           echo "KSU Next dev -> $ksu_sha"
 
+          # SUSFS 必须用分支名下载 GitLab archive；传 40 位 commit SHA 会导致 tar 404
           susfs_ref="gki-android14-6.1"
-          GL_QUERY="{ project(fullPath: \"simonpunk/susfs4ksu\") { repository { commit(ref: \"${susfs_ref}\") { sha } } } }"
-          RESPONSE=$(curl -fsS -G "https://gitlab.com/api/graphql" --data-urlencode "query=$GL_QUERY")
-          susfs_sha=$(echo "$RESPONSE" | jq -r '.data.project.repository.commit.sha // empty')
-          [ -n "$susfs_sha" ] || { echo "::error::cannot resolve SUSFS $susfs_ref"; exit 1; }
-          echo "SUSFS $susfs_ref -> $susfs_sha"
+          echo "SUSFS branch: $susfs_ref"
 
           echo "ksu_sha=$ksu_sha" >> "$GITHUB_OUTPUT"
-          echo "susfs_sha=$susfs_sha" >> "$GITHUB_OUTPUT"
+          echo "susfs_ref=$susfs_ref" >> "$GITHUB_OUTPUT"
           jq -r '"Device: \(.model) manifest=\(.manifest) branch=\(.branch)"' "$CFG"
 
       - name: Prepare device config JSON (multiline-safe)
@@ -150,7 +147,7 @@ jobs:
           op_config_json: ${{ steps.cfg.outputs.config_json }}
           ksu_type: KSUN
           ksu_branch_or_hash: ${{ steps.deps.outputs.ksu_sha }}
-          susfs_commit_hash_or_branch: ${{ steps.deps.outputs.susfs_sha }}
+          susfs_commit_hash_or_branch: ${{ steps.deps.outputs.susfs_ref }}
           optimize_level: O2
           build_timestamp: ${{ inputs.build_timestamp }}
           clean: ${{ inputs.clean_build }}
