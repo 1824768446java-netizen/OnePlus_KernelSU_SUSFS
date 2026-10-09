@@ -803,13 +803,26 @@ runs:
           while [ $attempt -le $max_attempts ]; do
               echo " Attempt $attempt/$max_attempts: High-speed fetch for $repo_name ($branch)"
               
+              dl_ok=0
               if aria2c -x16 -s16 -j16 -k1M --retry-wait=2 --max-tries=5 -d "/dev/shm" -o "$archive_name" --allow-overwrite=true "${aria2_headers[@]}" $aria_log_flags "$download_url"; then
+                  dl_ok=1
+              else
+                  echo "⚠️ aria2c exit=$? for $download_url -- falling back to curl"
+                  if curl -fSL --retry 3 --retry-delay 2 --connect-timeout 20 --max-time 900 -A "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" -o "$shm_path" "$download_url"; then
+                      dl_ok=1
+                  else
+                      echo "⚠️ curl also failed"
+                  fi
+              fi
+
+              if [ "$dl_ok" = "1" ]; then
                   mkdir -p "$repo_name"
                   if tar -I "pigz -p $nproc -b 256" -x --record-size=1M -f "$shm_path" -C "$repo_name" --strip-components=1 --no-same-owner; then
                       echo "✅ Success: $repo_name synced"
                       rm -f "$shm_path"
                       return 0
                   fi
+                  echo "⚠️ tar extraction failed for $shm_path"
               fi
               
               echo "⚠️ Attempt $attempt failed, clearing RAM and retrying..."
