@@ -30,7 +30,7 @@ runs:
     - name: Detect and Download Cache
       shell: bash
       env:
-        TARGET_REPO: "${{ github.repository }}"
+        TARGET_REPO: "WildKernels/OnePlus_KernelSU_SUSFS"
       run: |
         # Detect and Download Cache
         if [ "${{ inputs.debug }}" = "true" ]; then set -x; fi
