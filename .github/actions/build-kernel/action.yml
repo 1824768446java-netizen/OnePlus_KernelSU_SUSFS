@@ -2104,6 +2104,7 @@ runs:
     - name: 📊 ccache Post-Build Statistics
       id: ccache_stats
       if: ${{ success() && (inputs.clean == false || inputs.clean == 'false') }}
+      continue-on-error: true
       shell: bash
       run: |
         set -euo pipefail
@@ -2468,6 +2469,7 @@ runs:
 
     - name: Save ccache cache
       if: always() && steps.build_kernel_step.conclusion == 'success'
+      continue-on-error: true
       uses: ./action-source/.github/actions/cache/save
       with:
         cache_path: ${{ env.CCACHE_DIR }}
