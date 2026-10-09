@@ -1,0 +1,137 @@
+# Fork WildKernels/OnePlus_KernelSU_SUSFS 后把本文件放到 .github/workflows/ 再手动 Run workflow。
+# 只编一台 SM8650 平板（A16），产物为 AnyKernel3 zip（artifact 下载）。
+name: Build single Pad SM8650 (A16)
+
+on:
+  workflow_dispatch:
+    inputs:
+      device_model:
+        description: "configs/a16 下的机型 ID"
+        required: true
+        type: choice
+        default: OP-PAD-2-SM8650
+        options:
+          - OP-PAD-2-SM8650
+          - OP-PAD-PRO
+      build_timestamp:
+        description: "内核 uname 构建时间（与原厂一致可填 #1 SMP PREEMPT ...）"
+        required: false
+        type: string
+        default: "Tue Jun 30 05:53:43 UTC 2026"
+      clean_build:
+        description: "禁用 ccache 全量编译（更慢，排错时用）"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  build-one:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout WildKernels repo
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Resolve KSU Next + SUSFS refs
+        id: deps
+        shell: bash
+        run: |
+          set -euo pipefail
+          DEVICE="${{ inputs.device_model }}"
+          CFG="configs/a16/${DEVICE}.json"
+          test -f "$CFG" || { echo "::error::missing $CFG"; exit 1; }
+
+          ksu_type="KSUN"
+          ksu_ref="dev"
+          KSU_REPO_OWNER="KernelSU-Next"
+          KSU_REPO_NAME="KernelSU-Next"
+
+          QUERY='query($owner: String!, $name: String!, $headRef: String!) {
+            repository(owner: $owner, name: $name) {
+              ref(qualifiedName: $headRef) { target { ... on Commit { oid } } }
+            }
+          }'
+          HEAD_REF="refs/heads/${ksu_ref}"
+          RESULT=$(gh api graphql -f query="$QUERY" -f owner="$KSU_REPO_OWNER" -f name="$KSU_REPO_NAME" -f headRef="$HEAD_REF")
+          ksu_sha=$(echo "$RESULT" | jq -r '.data.repository.ref.target.oid // empty')
+          [ -n "$ksu_sha" ] || { echo "::error::cannot resolve KSU Next dev"; exit 1; }
+          echo "KSU Next dev -> $ksu_sha"
+
+          susfs_ref="gki-android14-6.1"
+          GL_QUERY="{ project(fullPath: \"simonpunk/susfs4ksu\") { repository { commit(ref: \"${susfs_ref}\") { sha } } } }"
+          RESPONSE=$(curl -fsS -G "https://gitlab.com/api/graphql" --data-urlencode "query=$GL_QUERY")
+          susfs_sha=$(echo "$RESPONSE" | jq -r '.data.project.repository.commit.sha // empty')
+          [ -n "$susfs_sha" ] || { echo "::error::cannot resolve SUSFS $susfs_ref"; exit 1; }
+          echo "SUSFS $susfs_ref -> $susfs_sha"
+
+          config_json=$(jq -c '.' "$CFG")
+          echo "config_json=$config_json" >> "$GITHUB_OUTPUT"
+          echo "ksu_sha=$ksu_sha" >> "$GITHUB_OUTPUT"
+          echo "susfs_sha=$susfs_sha" >> "$GITHUB_OUTPUT"
+          jq -r '"Device: \(.model) manifest=\(.manifest) branch=\(.branch)"' "$CFG"
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get -o Acquire::Retries=3 update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            git curl ca-certificates build-essential clang lld flex bison \
+            libelf-dev libssl-dev libncurses-dev zlib1g-dev liblz4-tool \
+            libxml2-utils rsync unzip dwarves file python3 ccache jq bc dos2unix kmod libdw-dev elfutils pigz
+          sudo apt-get clean
+
+      - name: Configure ccache
+        shell: bash
+        run: |
+          set -euo pipefail
+          CACHE_DIR="${{ github.workspace }}/.ccache"
+          mkdir -p "$CACHE_DIR"
+          {
+            echo "CCACHE_DIR=$CACHE_DIR"
+            echo "CCACHE_MAXSIZE=12G"
+            echo "CCACHE_COMPILERCHECK=content"
+            echo "CCACHE_BASEDIR=${{ github.workspace }}"
+            echo "CCACHE_NOHASHDIR=true"
+            echo "CCACHE_COMPRESSION=true"
+            echo "CCACHE_IS_KERNEL_COMPILING=true"
+          } >> "$GITHUB_ENV"
+
+      - name: Build kernel (AnyKernel3 zip)
+        id: build
+        uses: ./.github/actions/build-kernel
+        with:
+          op_config_json: ${{ steps.deps.outputs.config_json }}
+          ksu_type: KSUN
+          ksu_branch_or_hash: ${{ steps.deps.outputs.ksu_sha }}
+          susfs_commit_hash_or_branch: ${{ steps.deps.outputs.susfs_sha }}
+          optimize_level: O2
+          build_timestamp: ${{ inputs.build_timestamp }}
+          clean: ${{ inputs.clean_build }}
+          debug: false
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Job summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "### ${{ inputs.device_model }} — ${{ job.status }}"
+            echo ""
+            echo "| 项 | 值 |"
+            echo "|---|---|"
+            echo "| Kernel | ${{ steps.build.outputs.kernel_version }} |"
+            echo "| KSU Next | v${{ steps.build.outputs.ksu_version }} |"
+            echo "| SUSFS | ${{ steps.build.outputs.susfs_version }} |"
+            echo "| ZIP | ${{ steps.build.outputs.zip_name }} |"
+            echo "| 耗时 | ${{ steps.build.outputs.build_time }}s |"
+            echo ""
+            echo "到本 run 页面 **Artifacts** 下载 AnyKernel3 zip。刷写前确认 \`uname -r\` 与 zip 内内核版本一致（应为 **6.1.141**）。"
+          } >> "$GITHUB_STEP_SUMMARY"
