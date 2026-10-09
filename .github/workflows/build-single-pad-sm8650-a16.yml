@@ -44,16 +44,26 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          UP="WildKernels/OnePlus_KernelSU_SUSFS"
-          for f in \
-            .github/actions/kernel-source-sync/action.yml \
-            .github/actions/cache/restore/action.yml \
-            .github/actions/cache/save/action.yml
-          do
-            [ -f "$f" ] || continue
-            sed -i "s|\${{ github.repository }}|${UP}|g" "$f"
-            echo "patched $f -> ${UP}"
-          done
+          python3 << 'PY'
+          import pathlib
+          up = "WildKernels/OnePlus_KernelSU_SUSFS"
+          needle = chr(36) + chr(123) + chr(123) + " github.repository " + chr(125) + chr(125)
+          files = [
+              ".github/actions/kernel-source-sync/action.yml",
+              ".github/actions/cache/restore/action.yml",
+              ".github/actions/cache/save/action.yml",
+          ]
+          for rel in files:
+              p = pathlib.Path(rel)
+              if not p.is_file():
+                  continue
+              text = p.read_text(encoding="utf-8")
+              if needle not in text:
+                  print(f"skip (no needle): {rel}")
+                  continue
+              p.write_text(text.replace(needle, up), encoding="utf-8")
+              print(f"patched {rel} -> {up}")
+          PY
 
       - name: Resolve KSU Next + SUSFS refs
         id: deps
