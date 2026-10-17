@@ -1,41 +1,43 @@
-name: Build BakaSU AK3 - OnePlus 15 (Android 17)
+name: Build BakaSU AK3 - OnePlus 15 (Android 17, full features)
 
 on:
   workflow_dispatch:
     inputs:
       bakasu_ref:
-        description: 'BakaSU tag/ref (git ref of Baka-SU/BakaSU)'
+        description: 'BakaSU tag/ref'
         required: true
         default: 'v4.2.0-rc3'
       ack_commit:
-        description: 'kernel/common commit matching the device uname'
+        description: 'kernel/common commit matching device uname (6.12.69)'
         required: true
         default: '242e1a07f8782987c579929a20a74c0b26e88608'
+      localversion:
+        description: 'Kernel localversion (must equal stock vermagic suffix)'
+        required: true
+        default: '-android16-6-g242e1a07f878-ab15865446-4k'
+      susfs_branch:
+        description: 'susfs4ksu branch'
+        required: true
+        default: 'gki-android16-6.12'
       clang_version:
-        description: 'AOSP clang prebuilt (stock build used r536225)'
+        description: 'AOSP clang prebuilt (stock = r536225)'
         required: true
         default: 'clang-r536225'
       rust_version:
         description: 'AOSP rust prebuilt'
         required: true
         default: '1.82.0'
-      localversion:
-        description: 'Kernel localversion (must match stock vermagic)'
-        required: true
-        default: '-android16-6-g242e1a07f878-ab15865446-4k'
-      disable_rust:
-        description: 'Build without Rust (fallback only)'
-        type: boolean
-        default: false
 
 permissions:
   contents: read
 
 jobs:
   build:
-    name: BakaSU ${{ inputs.bakasu_ref }} / OP15 A17
+    name: OP15 A17 / BakaSU ${{ inputs.bakasu_ref }}
     runs-on: ubuntu-latest
     timeout-minutes: 360
+    env:
+      K: ${{ github.workspace }}/src/common
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -52,13 +54,13 @@ jobs:
           set -euo pipefail
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            git curl ca-certificates build-essential bc bison flex libssl-dev \
+            git curl wget ca-certificates build-essential bc bison flex libssl-dev \
             libelf-dev libncurses-dev zlib1g-dev liblz4-dev lz4 zstd cpio \
-            rsync zip unzip python3 python3-pip dwarves ccache openssl xz-utils file
+            rsync zip unzip python3 dwarves ccache openssl xz-utils file patch
           ccache --version | head -n1
           pahole --version
 
-      - name: Download kernel source (kernel/common @ ${{ inputs.ack_commit }})
+      - name: Download ACK kernel source @ ${{ inputs.ack_commit }}
         run: |
           set -euo pipefail
           mkdir -p src/common
@@ -66,68 +68,174 @@ jobs:
             "https://android.googlesource.com/kernel/common/+archive/${{ inputs.ack_commit }}.tar.gz"
           tar -xzf ack.tar.gz -C src/common
           rm -f ack.tar.gz
-          echo "--- kernel version ---"
           grep -E '^(VERSION|PATCHLEVEL|SUBLEVEL) ' src/common/Makefile
           du -sh src/common
 
-      - name: Download clang / bindgen / rust
+      - name: Download clang / rust / bindgen
         run: |
           set -euo pipefail
           mkdir -p toolchains/clang toolchains/clang-tools/bin toolchains/rust
-          curl -fL --retry 5 --retry-delay 5 -o clang.tar.gz \
+          curl -fL --retry 5 -o clang.tar.gz \
             "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/${{ inputs.clang_version }}.tar.gz"
-          tar -xzf clang.tar.gz -C toolchains/clang
-          rm -f clang.tar.gz
-          curl -fL --retry 5 --retry-delay 5 -o clang-tools.tar.gz \
+          tar -xzf clang.tar.gz -C toolchains/clang && rm -f clang.tar.gz
+          curl -fL --retry 5 -o clang-tools.tar.gz \
             "https://android.googlesource.com/platform/prebuilts/clang-tools/+archive/refs/heads/main/linux-x86/bin.tar.gz"
-          tar -xzf clang-tools.tar.gz -C toolchains/clang-tools/bin
-          rm -f clang-tools.tar.gz
-          curl -fL --retry 5 --retry-delay 5 -o rust.tar.gz \
+          tar -xzf clang-tools.tar.gz -C toolchains/clang-tools/bin && rm -f clang-tools.tar.gz
+          curl -fL --retry 5 -o rust.tar.gz \
             "https://android.googlesource.com/platform/prebuilts/rust/+archive/refs/heads/main/linux-x86/${{ inputs.rust_version }}.tar.gz"
-          tar -xzf rust.tar.gz -C toolchains/rust
-          rm -f rust.tar.gz
+          tar -xzf rust.tar.gz -C toolchains/rust && rm -f rust.tar.gz
           chmod +x toolchains/clang/bin/* toolchains/clang-tools/bin/* toolchains/rust/bin/* || true
           toolchains/clang/bin/clang --version | head -n1
           toolchains/rust/bin/rustc --version
           toolchains/clang-tools/bin/bindgen --version
-          test -d "toolchains/rust/lib/rustlib/src/rust/library/core"
-          df -h /
+          test -d toolchains/rust/lib/rustlib/src/rust/library/core
 
       - name: Add BakaSU ${{ inputs.bakasu_ref }}
         run: |
           set -euo pipefail
-          git clone https://github.com/Baka-SU/BakaSU.git src/BakaSU
+          git clone --quiet https://github.com/Baka-SU/BakaSU.git src/BakaSU
           git -C src/BakaSU checkout "${{ inputs.bakasu_ref }}"
           git -C src/BakaSU log -1 --oneline
           ln -sfn ../../BakaSU/kernel src/common/drivers/kernelsu
           printf '\nobj-$(CONFIG_KSU) += kernelsu/\n' >> src/common/drivers/Makefile
-          sed -i '/endmenu/i source "drivers/kernelsu/Kconfig"' src/common/drivers/Kconfig
+          sed -i '/^endmenu/i source "drivers/kernelsu/Kconfig"' src/common/drivers/Kconfig
           KSU_LOCAL=$(git -C src/BakaSU rev-list --count HEAD)
-          KSU_VERSION=$((30000 + KSU_LOCAL + 700))
-          echo "KSU_VERSION=${KSU_VERSION}" | tee -a "$GITHUB_ENV"
+          echo "KSU_VERSION=$((30000 + KSU_LOCAL + 700))" | tee -a "$GITHUB_ENV"
           echo "KSU_COMMIT=$(git -C src/BakaSU rev-parse --short=8 HEAD)" | tee -a "$GITHUB_ENV"
-          echo "BakaSU version code: ${KSU_VERSION} (expected 35171 for v4.2.0-rc3)"
 
-      - name: Prepare kernel config
+      - name: Apply SuSFS (kernel side)
         run: |
           set -euo pipefail
-          CFG=src/common/arch/arm64/configs/gki_defconfig
+          git clone --quiet --depth 1 -b "${{ inputs.susfs_branch }}" https://gitlab.com/simonpunk/susfs4ksu.git susfs
+          cp susfs/kernel_patches/fs/* "$K/fs/"
+          cp susfs/kernel_patches/include/linux/* "$K/include/linux/"
+          SUSVER=$(grep '#define SUSFS_VERSION' "$K/include/linux/susfs.h" | awk -F'"' '{print $2}')
+          echo "SUSVER=$SUSVER" | tee -a "$GITHUB_ENV"
+          echo "SuSFS kernel version: $SUSVER"
+          cd "$K"
+          patch -p1 --forward -F3 < "$GITHUB_WORKSPACE/susfs/kernel_patches/50_add_susfs_in_${{ inputs.susfs_branch }}.patch"
+          test -f fs/susfs.c
+          grep -c 'ksu_handle_' fs/exec.c fs/open.c fs/stat.c fs/read_write.c kernel/reboot.c kernel/sys.c drivers/input/input.c
+
+      - name: Add BBG (Baseband Guard)
+        run: |
+          set -euo pipefail
+          cd "$K"
+          wget -O- https://github.com/vc-teahouse/Baseband-guard/raw/main/setup.sh | bash -s main
+          sed -i '/^config LSM$/,/^help$/{ /^[[:space:]]*default/ { /baseband_guard/! s/selinux/selinux,baseband_guard/ } }' security/Kconfig
+          test -d security/baseband-guard || ls security | grep -i baseband
+
+      - name: Apply feature patches (unicode / ntsync / droidspaces)
+        run: |
+          set -euo pipefail
+          git clone --quiet --depth 1 https://github.com/WildKernels/kernel_patches.git kp
+          cd "$K"
+
+          echo "--- unicode bypass fix ---"
+          patch -p1 --forward -F3 < "$GITHUB_WORKSPACE/kp/common/unicode_bypass_fix_6.1+.patch"
+
+          echo "--- ntsync ---"
+          rm -f include/uapi/linux/ntsync.h drivers/misc/ntsync.c
+          patch -p1 --forward -F3 < "$GITHUB_WORKSPACE/kp/common/ntsync/ntsync_compat_android16-6.12.patch"
+          patch -p1 --forward -F3 < "$GITHUB_WORKSPACE/kp/common/ntsync/ntsync_base.patch"
+
+          echo "--- droidspaces (sysvipc kabi + ghost task) ---"
+          patch -p1 --forward -F3 < "$GITHUB_WORKSPACE/kp/common/droidspaces/fix_sysvipc_kabi_a16-6.12.patch"
+          patch -p1 --forward -F3 < "$GITHUB_WORKSPACE/kp/common/droidspaces/0001-Return-ghost-task-if-task-is-null-and-is-requested-b.patch"
+          for sym in put_ipc_ns:ipc/namespace.c init_ipc_ns:ipc/msgutil.c; do
+            s=${sym%%:*}; f=${sym##*:}
+            grep -q "EXPORT_SYMBOL.*$s" "$f" || echo "EXPORT_SYMBOL_GPL($s);" >> "$f"
+          done
+
+      - name: Prepare kernel config (stock device config + features)
+        run: |
+          set -euo pipefail
+          CFG="$K/arch/arm64/configs/gki_defconfig"
           cp configs/bakasu-op15-a17/device_config.txt "$CFG"
           {
             echo ''
+            echo '# === BakaSU / SuSFS ==='
             echo 'CONFIG_KSU=y'
-            echo 'CONFIG_KSU_TRACEPOINT_HOOK=y'
+            echo 'CONFIG_KSU_SUSFS=y'
+            echo 'CONFIG_KSU_SUSFS_SUS_PATH=y'
+            echo 'CONFIG_KSU_SUSFS_SUS_MOUNT=y'
+            echo 'CONFIG_KSU_SUSFS_SUS_KSTAT=y'
+            echo 'CONFIG_KSU_SUSFS_SPOOF_UNAME=y'
+            echo 'CONFIG_KSU_SUSFS_ENABLE_LOG=y'
+            echo 'CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y'
+            echo 'CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y'
+            echo 'CONFIG_KSU_SUSFS_OPEN_REDIRECT=y'
+            echo 'CONFIG_KSU_SUSFS_SUS_MAP=y'
+            echo ''
+            echo '# === BBG ==='
+            echo 'CONFIG_BBG=y'
+            echo ''
+            echo '# === BBR ==='
+            echo 'CONFIG_TCP_CONG_ADVANCED=y'
+            echo 'CONFIG_TCP_CONG_BBR=y'
+            echo ''
+            echo '# === qdisc ==='
+            echo 'CONFIG_NET_SCH_FQ=y'
+            echo 'CONFIG_NET_SCH_FQ_CODEL=y'
+            echo 'CONFIG_NET_SCH_CAKE=y'
+            echo 'CONFIG_NET_SCH_PIE=y'
+            echo 'CONFIG_NET_SCH_FQ_PIE=y'
+            echo ''
+            echo '# === TTL target ==='
+            echo 'CONFIG_IP_NF_TARGET_TTL=y'
+            echo 'CONFIG_IP6_NF_TARGET_HL=y'
+            echo 'CONFIG_IP6_NF_MATCH_HL=y'
+            echo ''
+            echo '# === IP_SET + IPv6 NAT ==='
+            echo 'CONFIG_IP_SET=y'
+            echo 'CONFIG_IP_SET_MAX=65534'
+            echo 'CONFIG_IP_SET_BITMAP_IP=y'
+            echo 'CONFIG_IP_SET_BITMAP_IPMAC=y'
+            echo 'CONFIG_IP_SET_BITMAP_PORT=y'
+            echo 'CONFIG_IP_SET_HASH_IP=y'
+            echo 'CONFIG_IP_SET_HASH_IPMARK=y'
+            echo 'CONFIG_IP_SET_HASH_IPPORT=y'
+            echo 'CONFIG_IP_SET_HASH_IPPORTIP=y'
+            echo 'CONFIG_IP_SET_HASH_IPPORTNET=y'
+            echo 'CONFIG_IP_SET_HASH_IPMAC=y'
+            echo 'CONFIG_IP_SET_HASH_MAC=y'
+            echo 'CONFIG_IP_SET_HASH_NETPORTNET=y'
+            echo 'CONFIG_IP_SET_HASH_NET=y'
+            echo 'CONFIG_IP_SET_HASH_NETNET=y'
+            echo 'CONFIG_IP_SET_HASH_NETPORT=y'
+            echo 'CONFIG_IP_SET_HASH_NETIFACE=y'
+            echo 'CONFIG_IP_SET_LIST_SET=y'
+            echo 'CONFIG_NETFILTER_XT_MATCH_ADDRTYPE=y'
+            echo 'CONFIG_NETFILTER_XT_SET=y'
+            echo 'CONFIG_IP6_NF_NAT=y'
+            echo 'CONFIG_IP6_NF_TARGET_MASQUERADE=y'
+            echo ''
+            echo '# === Unicode / FS ==='
+            echo 'CONFIG_TMPFS_XATTR=y'
+            echo 'CONFIG_TMPFS_POSIX_ACL=y'
+            echo ''
+            echo '# === NTSync ==='
+            echo 'CONFIG_NTSYNC=y'
+            echo ''
+            echo '# === Droidspaces ==='
+            echo 'CONFIG_SYSVIPC=y'
+            echo 'CONFIG_DEVTMPFS=y'
+            echo 'CONFIG_PID_NS=y'
+            echo 'CONFIG_POSIX_MQUEUE=y'
+            echo 'CONFIG_USER_NS=y'
+            echo 'CONFIG_NETFILTER_XT_TARGET_REJECT=y'
+            echo 'CONFIG_NETFILTER_XT_TARGET_LOG=y'
+            echo 'CONFIG_NETFILTER_XT_MATCH_RECENT=y'
+            echo ''
+            echo '# === uname ==='
             echo 'CONFIG_LOCALVERSION="${{ inputs.localversion }}"'
             echo '# CONFIG_LOCALVERSION_AUTO is not set'
           } >> "$CFG"
-          if [ "${{ inputs.disable_rust }}" = "true" ]; then
-            {
-              echo '# CONFIG_RUST is not set'
-              echo '# CONFIG_ANDROID_BINDER_IPC_RUST is not set'
-            } >> "$CFG"
-          fi
+          # LSM string must contain baseband_guard for BBG to register
+          sed -i 's/^CONFIG_LSM="\(.*\)"$/CONFIG_LSM="\1,baseband_guard"/' "$CFG"
+          grep -n 'CONFIG_LSM=' "$CFG"
 
-      - name: Build kernel (Image + modules)
+      - name: Build kernel
         run: |
           set -euo pipefail
           export PATH="$PWD/toolchains/clang/bin:$PWD/toolchains/clang-tools/bin:$PWD/toolchains/rust/bin:$PATH"
@@ -146,37 +254,39 @@ jobs:
           export CCACHE_COMPRESS=true
           export KCFLAGS="-Wno-error"
 
-          make -C src/common O="$PWD/out" gki_defconfig
-          make -C src/common O="$PWD/out" olddefconfig
+          make -C "$K" O="$PWD/out" gki_defconfig
+          make -C "$K" O="$PWD/out" olddefconfig
+          echo "--- resolved config ---"
+          grep -E 'CONFIG_(KSU|KSU_SUSFS|BBG|NTSYNC|IP_SET|IP_NF_TARGET_TTL|IP6_NF_NAT|SYSVIPC|USER_NS|PID_NS|TCP_CONG_BBR|LOCALVERSION)=' out/.config || true
+          grep -E '^CONFIG_LSM=' out/.config || true
 
-          echo "--- key config ---"
-          grep -E 'CONFIG_(KSU|KSU_TRACEPOINT_HOOK|KSU_MULTI_MANAGER_SUPPORT|RUST|ANDROID_BINDER_IPC_RUST|LOCALVERSION|MODVERSIONS|CFI_CLANG|MODULE_SIG)=' out/.config || true
-
-          BUILD_START=$(date +%s)
-          make -C src/common O="$PWD/out" -j"$(nproc)" Image modules
-          echo "BUILD_SECONDS=$(( $(date +%s) - BUILD_START ))" | tee -a "$GITHUB_ENV"
-
+          START=$(date +%s)
+          make -C "$K" O="$PWD/out" -j"$(nproc)" Image modules
+          echo "BUILD_SECONDS=$(( $(date +%s) - START ))" | tee -a "$GITHUB_ENV"
           ls -l out/arch/arm64/boot/Image
           strings out/arch/arm64/boot/Image | grep -m1 'Linux version'
           sha256sum out/arch/arm64/boot/Image
 
-      - name: Package AnyKernel3
+      - name: Package AK3
         run: |
           set -euo pipefail
-          git clone https://github.com/WildKernels/AnyKernel3.git ak3
+          git clone --quiet https://github.com/WildKernels/AnyKernel3.git ak3
           cd ak3
-          git checkout 0b46673ae91aee8d60bd6ee257b4d56d3f6a0114
+          git checkout --quiet 0b46673ae91aee8d60bd6ee257b4d56d3f6a0114
           cp ../out/arch/arm64/boot/Image ./Image
-          sed -i 's/^kernel.string=.*/kernel.string=BakaSU '"${{ inputs.bakasu_ref }}"' for OnePlus 15 (Android 17)/' anykernel.sh
-          sed -i 's/^do.check_boot_version=.*/do.check_boot_version=1/' anykernel.sh
-          ZIP_NAME="AK3_OP15_A17_6.12.69_BakaSU_${KSU_VERSION}.zip"
-          zip -r9 "../${ZIP_NAME}" ./* -x '*.git*' -x 'README.md'
+          cp ../configs/bakasu-op15-a17/anykernel.sh ./anykernel.sh
+          cp ../configs/bakasu-op15-a17/OP15_A17.txt ./OP15_A17.txt
+          sed -i 's|^kernel.string=.*|kernel.string=BakaSU ${{ inputs.bakasu_ref }} (SuSFS $SUSVER) for OnePlus 15 A17|' anykernel.sh
+          sed -i 's|^do.check_boot_version=.*|do.check_boot_version=1|' anykernel.sh
+          sed -i 's|^do.devicecheck=.*|do.devicecheck=0|' anykernel.sh
+          ZIP="AK3_OP15_A17_android16-6.12.69_BakaSU_${KSU_VERSION}_SuSFS_${SUSVER}.zip"
+          zip -r9 "../$ZIP" ./* -x '*.git*' -x 'README.md'
           cd ..
-          sha256sum "${ZIP_NAME}" | tee "${ZIP_NAME}.sha256"
-          echo "ZIP_NAME=${ZIP_NAME}" | tee -a "$GITHUB_ENV"
-          ls -l "${ZIP_NAME}"
+          sha256sum "$ZIP" | tee "$ZIP.sha256"
+          echo "ZIP_NAME=$ZIP" | tee -a "$GITHUB_ENV"
+          ls -l "$ZIP"
 
-      - name: Upload AK3 zip
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: AK3-OP15-A17-BakaSU-${{ inputs.bakasu_ref }}
@@ -190,12 +300,13 @@ jobs:
         if: always()
         run: |
           {
-            echo "## BakaSU AK3 build"
+            echo "## BakaSU AK3 - OnePlus 15 / Android 17"
             echo ""
-            echo "- BakaSU ref: \`${{ inputs.bakasu_ref }}\` (${{ env.KSU_COMMIT }})"
-            echo "- BakaSU version code: \`${{ env.KSU_VERSION }}\`"
+            echo "- BakaSU: \`${{ inputs.bakasu_ref }}\` (${{ env.KSU_COMMIT }}) version code \`${{ env.KSU_VERSION }}\`"
+            echo "- SuSFS kernel: \`${{ env.SUSVER }}\` (${{ inputs.susfs_branch }})"
             echo "- Kernel: \`kernel/common @ ${{ inputs.ack_commit }}\`"
-            echo "- Localversion: \`${{ inputs.localversion }}\`"
-            echo "- Build time: \`${{ env.BUILD_SECONDS }}s\`"
-            echo "- Artifact: \`${{ env.ZIP_NAME }}\`"
+            echo "- localversion: \`${{ inputs.localversion }}\`"
+            echo "- features: SuSFS / BBG / BBR / TTL / IP_SET+IPv6 NAT / Unicode / Droidspaces / NTSync"
+            echo "- build: \`${{ env.BUILD_SECONDS }}s\`"
+            echo "- artifact: \`${{ env.ZIP_NAME }}\`"
           } >> "$GITHUB_STEP_SUMMARY"
