@@ -55,10 +55,11 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
             git curl wget ca-certificates build-essential bc bison flex libssl-dev \
-            libelf-dev libncurses-dev zlib1g-dev liblz4-dev lz4 zstd cpio \
+            libelf-dev libdw-dev libncurses-dev zlib1g-dev liblz4-dev libzstd-dev lz4 zstd cpio \
             rsync zip unzip python3 dwarves ccache openssl xz-utils file patch
           ccache --version | head -n1
           pahole --version
+          ls /usr/include/dwarf.h /usr/include/gelf.h /usr/include/elfutils/libdw.h
 
       - name: Download ACK kernel source @ ${{ inputs.ack_commit }}
         run: |
