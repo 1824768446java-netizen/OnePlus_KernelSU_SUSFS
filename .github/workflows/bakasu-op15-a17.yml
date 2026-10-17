@@ -61,6 +61,30 @@ jobs:
           pahole --version
           ls /usr/include/dwarf.h /usr/include/gelf.h /usr/include/elfutils/libdw.h
 
+      # Ubuntu noble ships dwarves/pahole 1.25. That version emits a .BTF for the
+      # 6.12 GKI image that the in-tree resolve_btfids rejects:
+      #   BTFIDS  vmlinux
+      #   FAILED: load BTF from vmlinux: Invalid argument
+      #   make[3]: *** [scripts/Makefile.vmlinux:45: vmlinux] Error 255
+      # AOSP builds android16-6.12 with pahole 1.27, so build that from source and
+      # use it explicitly. Do NOT fall back to CONFIG_DEBUG_INFO_BTF=n: android
+      # netd/trafficstats eBPF objects need vmlinux BTF for CO-RE relocations.
+      - name: Build pahole 1.27 (dwarves) from source
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y --no-install-recommends cmake
+          git clone --depth 1 --branch v1.27 https://github.com/acmel/dwarves.git /tmp/dwarves
+          cd /tmp/dwarves
+          git submodule update --init --recursive --depth 1
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -DLIBBPF_EMBEDDED=ON -D__LIB=lib
+          cmake --build build -j"$(nproc)"
+          sudo cmake --install build
+          sudo ldconfig
+          hash -r
+          echo "--- pahole in effect ---"
+          command -v pahole
+          /usr/local/bin/pahole --version
+
       - name: Download ACK kernel source @ ${{ inputs.ack_commit }}
         run: |
           set -euo pipefail
@@ -280,6 +304,9 @@ jobs:
           export CCACHE_MAXSIZE=6G
           export CCACHE_COMPRESS=true
           export KCFLAGS="-Wno-error"
+          # pahole 1.27 is required for a valid vmlinux .BTF on 6.12 (see above)
+          export PAHOLE=/usr/local/bin/pahole
+          "$PAHOLE" --version
 
           # absolute reproducibility: byte-identical /proc/version vs stock
           export KBUILD_BUILD_TIMESTAMP="Wed Jul 15 11:18:49 UTC 2026"
@@ -294,7 +321,7 @@ jobs:
           grep -E '^CONFIG_LSM=' out/.config || true
 
           START=$(date +%s)
-          make -C "$K" O="$PWD/out" -j"$(nproc)" Image modules
+          make -C "$K" O="$PWD/out" -j"$(nproc)" Image modules PAHOLE="$PAHOLE"
           echo "BUILD_SECONDS=$(( $(date +%s) - START ))" | tee -a "$GITHUB_ENV"
           ls -l out/arch/arm64/boot/Image
           strings out/arch/arm64/boot/Image | grep -m1 'Linux version'
