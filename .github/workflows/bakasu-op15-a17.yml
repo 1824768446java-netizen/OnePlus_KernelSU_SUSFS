@@ -1,0 +1,201 @@
+name: Build BakaSU AK3 - OnePlus 15 (Android 17)
+
+on:
+  workflow_dispatch:
+    inputs:
+      bakasu_ref:
+        description: 'BakaSU tag/ref (git ref of Baka-SU/BakaSU)'
+        required: true
+        default: 'v4.2.0-rc3'
+      ack_commit:
+        description: 'kernel/common commit matching the device uname'
+        required: true
+        default: '242e1a07f8782987c579929a20a74c0b26e88608'
+      clang_version:
+        description: 'AOSP clang prebuilt (stock build used r536225)'
+        required: true
+        default: 'clang-r536225'
+      rust_version:
+        description: 'AOSP rust prebuilt'
+        required: true
+        default: '1.82.0'
+      localversion:
+        description: 'Kernel localversion (must match stock vermagic)'
+        required: true
+        default: '-android16-6-g242e1a07f878-ab15865446-4k'
+      disable_rust:
+        description: 'Build without Rust (fallback only)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: BakaSU ${{ inputs.bakasu_ref }} / OP15 A17
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          set -x
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
+          sudo apt-get clean
+          df -h /
+
+      - name: Install build dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            git curl ca-certificates build-essential bc bison flex libssl-dev \
+            libelf-dev libncurses-dev zlib1g-dev liblz4-dev lz4 zstd cpio \
+            rsync zip unzip python3 python3-pip dwarves ccache openssl xz-utils file
+          ccache --version | head -n1
+          pahole --version
+
+      - name: Download kernel source (kernel/common @ ${{ inputs.ack_commit }})
+        run: |
+          set -euo pipefail
+          mkdir -p src/common
+          curl -fL --retry 5 --retry-delay 5 -o ack.tar.gz \
+            "https://android.googlesource.com/kernel/common/+archive/${{ inputs.ack_commit }}.tar.gz"
+          tar -xzf ack.tar.gz -C src/common
+          rm -f ack.tar.gz
+          echo "--- kernel version ---"
+          grep -E '^(VERSION|PATCHLEVEL|SUBLEVEL) ' src/common/Makefile
+          du -sh src/common
+
+      - name: Download clang / bindgen / rust
+        run: |
+          set -euo pipefail
+          mkdir -p toolchains/clang toolchains/clang-tools/bin toolchains/rust
+          curl -fL --retry 5 --retry-delay 5 -o clang.tar.gz \
+            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/${{ inputs.clang_version }}.tar.gz"
+          tar -xzf clang.tar.gz -C toolchains/clang
+          rm -f clang.tar.gz
+          curl -fL --retry 5 --retry-delay 5 -o clang-tools.tar.gz \
+            "https://android.googlesource.com/platform/prebuilts/clang-tools/+archive/refs/heads/main/linux-x86/bin.tar.gz"
+          tar -xzf clang-tools.tar.gz -C toolchains/clang-tools/bin
+          rm -f clang-tools.tar.gz
+          curl -fL --retry 5 --retry-delay 5 -o rust.tar.gz \
+            "https://android.googlesource.com/platform/prebuilts/rust/+archive/refs/heads/main/linux-x86/${{ inputs.rust_version }}.tar.gz"
+          tar -xzf rust.tar.gz -C toolchains/rust
+          rm -f rust.tar.gz
+          chmod +x toolchains/clang/bin/* toolchains/clang-tools/bin/* toolchains/rust/bin/* || true
+          toolchains/clang/bin/clang --version | head -n1
+          toolchains/rust/bin/rustc --version
+          toolchains/clang-tools/bin/bindgen --version
+          test -d "toolchains/rust/lib/rustlib/src/rust/library/core"
+          df -h /
+
+      - name: Add BakaSU ${{ inputs.bakasu_ref }}
+        run: |
+          set -euo pipefail
+          git clone https://github.com/Baka-SU/BakaSU.git src/BakaSU
+          git -C src/BakaSU checkout "${{ inputs.bakasu_ref }}"
+          git -C src/BakaSU log -1 --oneline
+          ln -sfn ../../BakaSU/kernel src/common/drivers/kernelsu
+          printf '\nobj-$(CONFIG_KSU) += kernelsu/\n' >> src/common/drivers/Makefile
+          sed -i '/endmenu/i source "drivers/kernelsu/Kconfig"' src/common/drivers/Kconfig
+          KSU_LOCAL=$(git -C src/BakaSU rev-list --count HEAD)
+          KSU_VERSION=$((30000 + KSU_LOCAL + 700))
+          echo "KSU_VERSION=${KSU_VERSION}" | tee -a "$GITHUB_ENV"
+          echo "KSU_COMMIT=$(git -C src/BakaSU rev-parse --short=8 HEAD)" | tee -a "$GITHUB_ENV"
+          echo "BakaSU version code: ${KSU_VERSION} (expected 35171 for v4.2.0-rc3)"
+
+      - name: Prepare kernel config
+        run: |
+          set -euo pipefail
+          CFG=src/common/arch/arm64/configs/gki_defconfig
+          cp configs/bakasu-op15-a17/device_config.txt "$CFG"
+          {
+            echo ''
+            echo 'CONFIG_KSU=y'
+            echo 'CONFIG_KSU_TRACEPOINT_HOOK=y'
+            echo 'CONFIG_LOCALVERSION="${{ inputs.localversion }}"'
+            echo '# CONFIG_LOCALVERSION_AUTO is not set'
+          } >> "$CFG"
+          if [ "${{ inputs.disable_rust }}" = "true" ]; then
+            {
+              echo '# CONFIG_RUST is not set'
+              echo '# CONFIG_ANDROID_BINDER_IPC_RUST is not set'
+            } >> "$CFG"
+          fi
+
+      - name: Build kernel (Image + modules)
+        run: |
+          set -euo pipefail
+          export PATH="$PWD/toolchains/clang/bin:$PWD/toolchains/clang-tools/bin:$PWD/toolchains/rust/bin:$PATH"
+          export ARCH=arm64 SUBARCH=arm64
+          export LLVM=1 LLVM_IAS=1
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          export CC="ccache clang" CXX="ccache clang++" HOSTCC=clang HOSTCXX=clang++
+          export LD=ld.lld HOSTLD=ld.lld AR=llvm-ar NM=llvm-nm
+          export OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip READELF=llvm-readelf
+          export RUSTC="$PWD/toolchains/rust/bin/rustc"
+          export BINDGEN="$PWD/toolchains/clang-tools/bin/bindgen"
+          export RUST_LIB_SRC="$PWD/toolchains/rust/lib/rustlib/src/rust/library"
+          export LD_LIBRARY_PATH="$PWD/toolchains/rust/lib:${LD_LIBRARY_PATH:-}"
+          export CCACHE_DIR="$PWD/.ccache"
+          export CCACHE_MAXSIZE=6G
+          export CCACHE_COMPRESS=true
+          export KCFLAGS="-Wno-error"
+
+          make -C src/common O="$PWD/out" gki_defconfig
+          make -C src/common O="$PWD/out" olddefconfig
+
+          echo "--- key config ---"
+          grep -E 'CONFIG_(KSU|KSU_TRACEPOINT_HOOK|KSU_MULTI_MANAGER_SUPPORT|RUST|ANDROID_BINDER_IPC_RUST|LOCALVERSION|MODVERSIONS|CFI_CLANG|MODULE_SIG)=' out/.config || true
+
+          BUILD_START=$(date +%s)
+          make -C src/common O="$PWD/out" -j"$(nproc)" Image modules
+          echo "BUILD_SECONDS=$(( $(date +%s) - BUILD_START ))" | tee -a "$GITHUB_ENV"
+
+          ls -l out/arch/arm64/boot/Image
+          strings out/arch/arm64/boot/Image | grep -m1 'Linux version'
+          sha256sum out/arch/arm64/boot/Image
+
+      - name: Package AnyKernel3
+        run: |
+          set -euo pipefail
+          git clone https://github.com/WildKernels/AnyKernel3.git ak3
+          cd ak3
+          git checkout 0b46673ae91aee8d60bd6ee257b4d56d3f6a0114
+          cp ../out/arch/arm64/boot/Image ./Image
+          sed -i 's/^kernel.string=.*/kernel.string=BakaSU '"${{ inputs.bakasu_ref }}"' for OnePlus 15 (Android 17)/' anykernel.sh
+          sed -i 's/^do.check_boot_version=.*/do.check_boot_version=1/' anykernel.sh
+          ZIP_NAME="AK3_OP15_A17_6.12.69_BakaSU_${KSU_VERSION}.zip"
+          zip -r9 "../${ZIP_NAME}" ./* -x '*.git*' -x 'README.md'
+          cd ..
+          sha256sum "${ZIP_NAME}" | tee "${ZIP_NAME}.sha256"
+          echo "ZIP_NAME=${ZIP_NAME}" | tee -a "$GITHUB_ENV"
+          ls -l "${ZIP_NAME}"
+
+      - name: Upload AK3 zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: AK3-OP15-A17-BakaSU-${{ inputs.bakasu_ref }}
+          path: |
+            *.zip
+            *.sha256
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "## BakaSU AK3 build"
+            echo ""
+            echo "- BakaSU ref: \`${{ inputs.bakasu_ref }}\` (${{ env.KSU_COMMIT }})"
+            echo "- BakaSU version code: \`${{ env.KSU_VERSION }}\`"
+            echo "- Kernel: \`kernel/common @ ${{ inputs.ack_commit }}\`"
+            echo "- Localversion: \`${{ inputs.localversion }}\`"
+            echo "- Build time: \`${{ env.BUILD_SECONDS }}s\`"
+            echo "- Artifact: \`${{ env.ZIP_NAME }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

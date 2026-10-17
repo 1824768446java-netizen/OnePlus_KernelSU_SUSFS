@@ -1,0 +1,2 @@
+configs/bakasu-op15-a17/device_config.txt -text
+.github/workflows/*.yml text eol=lf
