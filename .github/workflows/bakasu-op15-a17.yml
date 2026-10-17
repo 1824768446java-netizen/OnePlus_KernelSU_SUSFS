@@ -161,8 +161,8 @@ jobs:
             echo 'CONFIG_KSU_SUSFS_SUS_PATH=y'
             echo 'CONFIG_KSU_SUSFS_SUS_MOUNT=y'
             echo 'CONFIG_KSU_SUSFS_SUS_KSTAT=y'
-            echo 'CONFIG_KSU_SUSFS_SPOOF_UNAME=y'
-            echo 'CONFIG_KSU_SUSFS_ENABLE_LOG=y'
+            echo 'CONFIG_KSU_SUSFS_SPOOF_UNAME=n'
+            echo 'CONFIG_KSU_SUSFS_ENABLE_LOG=n'
             echo 'CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y'
             echo 'CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y'
             echo 'CONFIG_KSU_SUSFS_OPEN_REDIRECT=y'
@@ -236,6 +236,19 @@ jobs:
           sed -i 's/^CONFIG_LSM="\(.*\)"$/CONFIG_LSM="\1,baseband_guard"/' "$CFG"
           grep -n 'CONFIG_LSM=' "$CFG"
 
+      - name: Make /proc/version identical to stock + strip KSU from /proc/config.gz
+        run: |
+          set -euo pipefail
+          # 1) stock /proc/version: "6.12.69-android16-6-g242e1a07f878-ab15865446-4k (kleaf@build-host) (...) #1 SMP PREEMPT Wed Jul 15 11:18:49 UTC 2026"
+          # 2) /proc/config.gz must not advertise CONFIG_KSU / CONFIG_BBG
+          if ! grep -q '^filechk_cat = cat \$<' "$K/kernel/Makefile"; then
+            echo "::error::filechk_cat rule not found in kernel/Makefile"
+            exit 1
+          fi
+          sed -i 's~^filechk_cat = cat \$<~filechk_cat = sed -E "/^CONFIG_(KSU|BBG)/d" $<~' "$K/kernel/Makefile"
+          grep -n '^filechk_cat' "$K/kernel/Makefile"
+          rm -f out/kernel/config_data out/kernel/config_data.gz || true
+
       - name: Build kernel
         run: |
           set -euo pipefail
@@ -255,6 +268,12 @@ jobs:
           export CCACHE_COMPRESS=true
           export KCFLAGS="-Wno-error"
 
+          # absolute reproducibility: byte-identical /proc/version vs stock
+          export KBUILD_BUILD_TIMESTAMP="Wed Jul 15 11:18:49 UTC 2026"
+          export KBUILD_BUILD_USER="kleaf"
+          export KBUILD_BUILD_HOST="build-host"
+          export KBUILD_BUILD_VERSION=1
+
           make -C "$K" O="$PWD/out" gki_defconfig
           make -C "$K" O="$PWD/out" olddefconfig
           echo "--- resolved config ---"
@@ -267,6 +286,17 @@ jobs:
           ls -l out/arch/arm64/boot/Image
           strings out/arch/arm64/boot/Image | grep -m1 'Linux version'
           sha256sum out/arch/arm64/boot/Image
+
+          echo "--- verify /proc/config.gz payload has no KSU/BBG ---"
+          if [ -f out/kernel/config_data ]; then
+            if grep -qE '^CONFIG_(KSU|BBG)' out/kernel/config_data; then
+              echo "::error::config_data still leaks KSU/BBG"
+              exit 1
+            fi
+            echo "OK: config_data is clean ($(grep -c . out/kernel/config_data) lines)"
+          else
+            echo "::warning::out/kernel/config_data not found, skipping check"
+          fi
 
       - name: Package AK3
         run: |
